@@ -1,0 +1,533 @@
+---
+title: "STAT 432 Final Project"
+author: "Jeff Massman - massman4"
+date: "11/24/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{css}
+h1, h2, h4 {
+  text-align: center;
+  font-weight: bold;
+}
+```
+
+# Project Description And Summary
+
+There are two main objectives of this report: to construct models to predict the **histological subtype** and **progesterone (PR) status** of breast cancers, and select a subset of $50$ biomarkers from the $1936$ available to accurately predict all four outcomes considered (the above two, as well as **Estrogen status** and **HER2 final status**).
+
+For methodology, see below.
+
+At the end of this section, a summary of the findings and conclusions is provided.
+
+This report is organized into several sections:
+
+### 1. Literature Review
+
+In this section, we will first review the relevant literature and adopt some of the applicable methodology used by authors. There are five different articles that will be examined. Further details can be found in this section. See the end of this report for references.
+
+### 2. Summary Statistics and Data Processing
+
+This section will be where we provide a brief exposition of the data, including relevant summary statistics, graphics, and any transformations, if necessary. This will also be where we describe, in detail, how we will modify the data to conform to our formulation of the problem.
+
+### 3. Modelling PR Status
+
+**PR Status** is a binary variable indicating whether the breast cancer in question contains Progesterone receptors. We label **PR Status** as "Positive," indicating that the observation contains Progesterone receptors, or "negative" otherwise. In this section, we will construct two classification models using two different methods (CART and random forest) and evaluate the effectiveness of these models using the "classification error" on a testing data set, i.e the proportion of misclassifications resultant from the model.
+
+### 4. Modeling Histological Subtype
+
+In this section, we build a classification model to predict the histological subtype of the breast cancer given the predictors. The modelled response will be binary with categories “infiltrating lobular carcinoma” and “infiltrating ductal carcinoma."" We will again use two different methods for this section (LDA and SVM) with AUC as the criterion. See relevant section for more details.
+
+### 5. Variable Selection
+
+The goal of this section is to investigate the possibility of selecting a small subset of $50$ predictors to accurately classify all four of the considered responses. We will use a three-fold cross-validation with AUC as the metric to evaluate the effectiveness of such an approach. See relevant section for more details.
+
+---------------------------------------------------
+
+## Conclusion
+
+We found that the CART performed well for classifying PR status, however the poorer performance of the random forest casts the effectiveness of this model into doubt. 
+
+For predicting the histological type, we found that the LDA model performed significantly better than the SVM, though the drawback was that we used principal components which obscures the interpretability of the model. Nevertheless, it had a relatively high AUC value.
+
+For the variable selection, we found that a purely data-driven approach, comparing across lasso-selected variables tuned for each response, produced less-than-adequate results, with AUCs hovering around $0.7$. On the other hand, while slightly better, the literature-motivated model performed similarly.
+
+# Literature Review
+
+In this section, we will summarize the relevant findings of four different articles.
+
+The first article, "Comprehensive Molecular Portraits of Invasive Lobular Breast Cancer", actually provides some background on the data set used in this analysis. In the article, Giovanni Ciriello et al. investigate the problem of classifying the histological subtype of breast cancer subjects. Like this report, the authors primarily focus on the subtypes **invasive lobular carcinoma (ILC)** and **invasive ductal carcinoma (IDC)**. They discovered that mutations targeting genes PTEN, TBX3, and FOXA1 were "ILC enriched features", i.e. that are highly associated with the ILC subtype. Similarly, they found that mutations of the gene GATA3 were indicative of IDC [1].
+
+In "Supervised Risk Predictor of Breast Cancer Based on Intrinsic Subtypes," Joel Parker et al. sought out a $50$ variable model to predict breast cancer subtype, which is quite similar to the goal of the variable selection portion of this report. The authors sampled a variety of methods to select their variables, including "the top 'N' t-test statistics for each group, top cluster index scores, and the remaining genes after 'shrinkage' of modified t test statistics." Ultimately, they decided upon the top N method as they found that it produced the smallest cross-validation error. We will borrow some of these ideas in this report [2].
+
+An article published in the Journal of Clinical Oncology in June of 2010 evaluated the current state of ER and PR testing. The article found that the most widely used method, called immunohistiochemistry (IHC) is somewhat problematic, with a $20\%$ miscalculation rate. This article also surveyed a few other attempts by other researchers to classify ER and PR status using different assays of biomarkers [3].
+
+One such article in particular saw the authors identify a $21$ biomarker assay in order to predict certain facets of ER, PR, and HER2, with good results. Some -- but not all -- of these markers are contained in our data set; we will incorporate these in our variable selection [4].
+
+A similar article, published in the journal Nature in 2002, introduces another assay to use in predicting clinical outcomes of breast cancer. L. van 't Veer et al. also investigate identifying the ER status of breast cancers. We will borrow some of their findings [5].
+
+```{r}
+cancer = read.csv("/Users/jeffmassman/Desktop/brca_data_w_subtypes.csv")
+```
+
+# Summary Statistics and Data Processing
+
+The data used in this analysis contains $705$ observations and $1936$ predictor variables, consisting of $860$ copy number variations, $249$ mutations, $604$ gene expressions and $223$ protein levels. There are $5$ outcome variables, namely `vital.status`, `PR.Status`, `ER.Status`, `HER2.Final.Status`, and `histological.type`. We will discard the response `vital.status` and only consider the other four outcomes. As mentioned before, all four outcomes will be modelled as binary variables.`PR.Status`, `ER.Status`, `HER2.Final.Status` will be modelled as indicator variables and will be encoded as `"Positive"` and `"Negative"`, indicating the presence or absence of the effect in the subject. `histological.type` will have two classes, namely ILC and IDC.
+
+First and foremost, the predictor variables contain no missing values, as is demonstrated with the folloing R code:
+
+```{r,echo = TRUE}
+any(is.na(cancer[,1:1931]))
+```
+
+Therefore, imputation of the data will not be necessary.
+
+It is a slightly different story for the response variables, however. For `PR.Status`, there is a considerable number of missing values. Observe the following table:
+
+```{r}
+table(cancer$PR.Status)
+```
+As evidenced by the table, there are a number of useless values in the response. This leaves only $546$ total positive and negative values that we can use in the `PR.Status` classification section of this report. The situation is similar for all the other response variables except for `histological.type`, which has no missing values. Therefore, for certain parts of this report, we must use a smaller subset of the entire data set.
+
+That being said, there is a different potential issue with `histological.type`, which is that it is relatively unbalanced. There are $131$ ILC and $574$ IDC labels. This corresponds to a $18.6\%-81.4\%$ split, which may prove to be a problem for classification. We will investigate this further in that section of the report.
+
+The first $604$ variables (columns) of the data are the gene expressions. These are continuous variables, each with a different distribution. some are multimodal, some are approximately normally distributed, and many of them contain several repeated values of $0$. Here are a few example distributions: 
+
+```{r}
+par(mfrow = c(1,3))
+hist(cancer[,7],col = "lightblue",main = names(cancer)[7],freq = FALSE,xlab = "")
+hist(cancer[,150],col = "lightblue",main = names(cancer)[150],freq = FALSE,xlab = "")
+hist(cancer[,300],col = "lightblue",main = names(cancer)[300],freq = FALSE,xlab = "")
+```
+
+Since most of these variables will eventually be discarded in the variable selection section of this report, we need not worry about any transformations.
+
+The next $860$ are the copy number variations. These variables are discrete, with four integral values: $-2,\,-1,\,0,\,1,\,$ and $2$. Here is an example table for the variable `cn_RIMS2`:
+
+```{r}
+tabl1 = table(cancer$cn_RIMS2)
+tabl1
+```
+
+In general, there is an imbalance in the distribution. Observe:
+
+```{r}
+C = c()
+for (i in 605:1464) {
+  tabl = table(cancer[,i])
+  C[i-604] = names(tabl)[which.max(tabl)]
+}
+tabC = table(as.numeric(C))/860
+tabC
+```
+
+This is a table of the proportion of values which are the most frequent in its variable. For example, in $74.65\%$ of the copy number variation variables, $0$ is the most frequently occuring value. $-2$ and $2$ are not the most frequent value in any of the variables.
+
+The next $249$ variables are mutations. These variables are binary encoded as $1$ and $0$, indicating the presence or absence of said mutation respectively. These variables are also imbalanced; in general, $1$ is sparse, which makes sense. Here is an example, for `mu_ABCA13`:
+
+```{r}
+table(cancer$mu_ABCA13)
+```
+
+As evident in the table, $0$ is quite common, while $1$ is sparse.
+
+Finally, the remaining $223$ variables are the protein levels. These variables are continuous. They follow bell-shaped distributions centered at $0$, however, conducting Shapiro-Wilkes tests on a select few of them (with a Bonferroni-corrected significance level) have indicated that they are not normally distributed. For the sake of visualization, here is an example density histogram for the variable `pp_mTOR`:
+
+```{r}
+hist(cancer$pp_mTOR,freq = FALSE,col = "violet",main = "pp_mTOR",xlab = "")
+```
+
+### Further Notes
+
+The data contains some highly correlated predictors. Namely, there exist $`r (sum(abs(cor(cancer[1:1936])) > 0.95)-1936)/2`$ pairs of predictors (out of $1873080$ possible pairs) that have a correlation coefficient greater than $0.95$. None have an equally strong negative correlation. This means that we may have issues with approximate collinearity in our analysis. We will explicitly address this as it comes up in the relevant section(s).
+
+# Modelling PR-Status
+
+In this section of the report, we will attempt to build a classification model for PR-Status, analyzing the performance of two different methodologies and deciding which is preferred.
+
+First, as mentioned in the in the prior section, we will have to use a subset of the data that contains only "positive" and "negative" values of the relevant response. We will further split the data randomly into training and testing sets, with an $80-20$ split respectively.
+
+```{r}
+cancer.pr = cancer[cancer$PR.Status == "Positive" | cancer$PR.Status == "Negative",c(-1937,-1939,-1940,-1941)]
+cancer.pr$PR.Status = droplevels(cancer.pr$PR.Status)
+```
+
+We will first fit a standard Classification Tree (CART) model. The following is the confusion matrix resulting from prediction on the testing data set:
+
+```{r}
+set.seed(1)
+index = c(rep(1,437),rep(0,109))
+index = sample(index)
+cancer.pr.train = cancer.pr[index == 1,]
+cancer.pr.test = cancer.pr[index == 0,]
+
+library(rpart)
+fit = rpart(as.factor(PR.Status) ~., data = cancer.pr.test,method = "class")
+yhat = predict(fit,newdata = cancer.pr.test[,-1937],type = "class")
+conf.1 = table(yhat,cancer.pr.test$PR.Status)
+conf.1
+```
+
+The **classification error** associated with this model is $`r (conf.1[1,2] + conf.1[2,1])/109`$ and the accuracy is $`r (conf.1[1,1] + conf.1[2,2])/109`$. This model is decent on its own, however, we may attempt to reduce its complexity by pruning the tree. We will do so using the $1-\mathrm{SD}$ method. The resulting confusion matrix:
+
+```{r}
+set.seed(1)
+fit.prune = prune(fit,cp =  0.01507557)
+yhat2 = predict(fit.prune,newdata = cancer.pr.test[,-1937],type = "class")
+conf.1 = table(yhat2,cancer.pr.test$PR.Status)
+conf.1
+```
+
+Our new pruned tree maintains the same predictive power as before.
+
+```{r,warning = FALSE,message = FALSE}
+library(rpart.plot)
+rpart.plot(fit.prune)
+```
+
+This figure is a small portion of the pruned classification tree, provided to offer some visual intuition as to what the tree is doing. In reality, the tree is too large to reasonably display here.
+
+The CART model is good, but can we do better? We will fit another type of classification model to see if we can improve upon the performance of the previous tree model. In the same branch (pardon the pun) as the classification tree model, we will fit a $1000$ tree random forest and analyze the results.
+
+```{r,warning = FALSE, message = FALSE}
+library(randomForest)
+set.seed(1)
+rf.fit = randomForest(as.factor(PR.Status) ~ ., data = cancer.pr.train, ntree = 1000)
+pred = predict(rf.fit,newdata = cancer.pr.test,type = "class")
+table(pred,cancer.pr.test$PR.Status)
+```
+
+The classification error for the random forest is $`r 19/(19+90)`$ which is not that great, and which is significantly higher than the single tree model. Additionally, though the random forest is adept at identifying true positives, it seems to particularly struggle with false positives. This indicates that the random forest seems to prefer predicting into the dominant class, `"Positive"`. Since the random forest is a more stable version of a single classification tree model, this possibly casts the good performance of the prior model into question; its good performance may be due to chance.
+
+# Modelling Histological Subtype
+
+In  this section, we will build a model to predict the histological subtype of the cancer. We will again use an $80\%-20\%$ training-testing data split, except this time, since there are no missing values in the response under consideration, we can use the entire data set. The evaluation criterion will be "area under the curve" (AUC).
+
+The first method we will use is Linear Discriminant Analysis (LDA). Recall that, as was mentioned in the data summary section, some of the predictors are approximately collinear. This can be an issue for LDA, and we will need to resolve this before proceeding with a proper analysis. We will use principal components to remedy this.
+
+Here is the (standard deviation) Scree Plot:
+
+```{r, fig1, out.width = '80%', out.height= '80%'}
+pcrs = prcomp(cancer[1:1936],scale = TRUE)
+plot(1:length(pcrs$sdev),pcrs$sdev,type = "l",xlab = "PC", ylab = "SD", main = "Scree Plot",col = "darkgreen")
+abline(v=100,lty = "dashed")
+```
+
+We will use $100$ PCs in our analysis.
+
+We will further split the PC data into a training and testing set. The performance curve:
+
+```{r}
+set.seed(1)
+indices = c(rep(1,564),rep(0,141))
+indices = sample(indices)
+levels(cancer$histological.type) = c("IDC","ILC")
+cancer$histological.type = replace(cancer$histological.type,(cancer$histological.type == "infiltrating ductal carcinoma"),"IDC")
+cancer$histological.type = replace(cancer$histological.type,(cancer$histological.type == "infiltrating lobular carcinoma"),"ILC")
+cancer.ht.train.pcrs = pcrs$x[indices == 1,1:100]
+cancer.ht.test.pcrs = pcrs$x[indices == 0,1:100]
+```
+
+```{r,warning = FALSE, message = FALSE}
+library(MASS)
+fit = lda(cancer.ht.train.pcrs,cancer$histological.type[indices == 1])
+pred.lda = predict(fit,newdata = cancer.ht.test.pcrs)
+#table(pred.lda$class, cancer$histological.type[indices == 0])
+library(ROCR)
+# choose the posterior probability column carefully, it may be 
+# lda.pred$posterior[,1] or lda.pred$posterior[,2], depending on your factor levels 
+pred = prediction(as.numeric(pred.lda$class),as.numeric(cancer$histological.type[indices == 0])) 
+perf = performance(pred,"tpr","fpr")
+plot(perf,colorize=TRUE)
+AUC = performance(pred, measure = "auc")
+#AUC@y.values[[1]]
+```
+
+The AUC for this model is $`r AUC@y.values[[1]]`$.
+
+This LDA model is pretty good, however not spectacular, and using the PCs may obfuscate the interpretation of the results. Can we do better?
+
+We will now fit a linear Support Vector Machine (SVM) model. Here is the corresponding curve:
+
+```{r,warning = FALSE}
+cancer.ht.train = cancer[indices == 1,-(1937:1940)]
+cancer.ht.test = cancer[indices == 0,-(1937:1940)]
+library(e1071)
+svm.fit = svm(histological.type ~ ., data = cancer.ht.train, type='C-classification', kernel='linear', scale=FALSE, cost = 100)
+svm.pred = predict(svm.fit,newdata = cancer.ht.test)
+#table(svm.pred,cancer.ht.test$histological.type)
+pred = prediction(as.numeric(svm.pred),as.numeric(cancer$histological.type[indices == 0])) 
+perf = performance(pred,"tpr","fpr")
+plot(perf,colorize=TRUE)
+AUC2 = performance(pred, measure = "auc")
+#AUC2@y.values[[1]]
+```
+
+The curve is further from the top left than the previous one; the AUC for this model is $`r AUC2@y.values[[1]]`$. Unfortunately, this model performs worse than the LDA with PCs.
+
+Furthermore, the model seems resistant to tuning. Adjusting the `cost` parameter has failed to enhance the model performance. Similarly, changing the kernel (e.g to "radial" for instance) actually worsened the prediction. QDA results in prediction into the dominant class.
+
+Therefore, we conclude this section by reporting that LDA with $100$ PCs is the preferred model of the two surveyed.
+
+# Variable Selection
+
+In this section, our goal is to select just $50$ predictors that are useful in simultaneously--and sufficiently--classifying all four responses, namely `PR.Status`, `ER.Status`, `HER2.Final.Status` and `histological.type`. Selection of predictors will be partially motivated by the literature, as well as by standard statistical methods.
+
+We will proceed with the following methodology for evaluating the models:
+
+  1. We will select some set of $50$ predictors using the above methods
+  2. Three-fold cross validation will be conducted on the models, with AUC as the criterion, which will be averaged over the three folds for each model
+  3. All four average AUCs will then be averaged again and recorded
+  4. The above four steps will be repeated with a different subset of $50$ predictors. AUC values will then be compared to select the optimal set of predictors.
+
+Standard logistic regression will be used to do the actual classifying. The classifying cutoff may change if improved performance is observed.
+
+We begin by using as many of the genes in our data set as possible that were found to be significant by by Joel et al.
+
+```{r}
+data.ht = cbind(cancer$cn_FOXC1,cancer$cn_MIA, cancer$cn_MELK,cancer$cn_TMEM45B,cancer$cn_ESR1,cancer$cn_FOXA1,cancer$mu_ERBB2,cancer$cn_FGFR4,cancer$cn_CDC20,cancer$pp_Cyclin.E1,cancer$rs_SFRP1,cancer$cn_KRT14,cancer$cn_KRT17,cancer$rs_KRT5,cancer$pp_Cyclin.B1,cancer$cn_CCDC68,cancer$cn_MMP11,cancer$cn_PGR,cancer$cn_BCL2L14,cancer$pp_EGFR,cancer$cn_CDH3,cancer$rs_NAT1,cancer$cn_SLC39A6,cancer$cn_MAPT,cancer$cn_MEOX1,cancer$cn_BIRC5)
+```
+
+This gives us 26 out of the 50 predictors.
+
+We can also include the predictors that Giovanni Ciriello et al. found to be significant in predicting histological subtype. This brings us to $29$. Furthermore, we can also include as many of the $21$ ER, PR, and HER2 assay markers as are in our data, as provided by  Paik, Soonmyung et al.
+
+In all, this brings us to $41$ predictors. To obtain the remaining $9$, we can use some of the predictors identified in van 't Veer, L. et al.
+
+The result after applying the above procedure:
+
+```{r,message=FALSE,warning=FALSE}
+library(MASS)
+data.ht = cbind(data.ht,cancer$cn_GATA3,cancer$mu_PTEN,cancer$mu_TBX3,cancer$pp_HER2,cancer$cn_GSTM1,cancer$cn_PGR,cancer$pp_Bcl.2,cancer$rs_SCUBE2,cancer$pp_GAPDH,cancer$pp_TFRC,cancer$cn_CDH1,cancer$mu_TBX3,cancer$mu_RUNX1,cancer$mu_PIK3CA,cancer$mu_TP53,cancer$pp_ER.alpha,cancer$mu_ERBB3,cancer$pp_Cyclin.E2,cancer$cn_GSTM3,cancer$cn_MATN2,cancer$cn_SEC14L2,cancer$pp_TFRC,cancer$cn_PRAME,cancer$mu_SACS,cancer[,1938:1941])
+```
+
+```{r,message = FALSE, warning = FALSE}
+
+library(glmnet)
+set.seed(1)
+folds = sample(1:3, 705, replace = TRUE)
+data.ht = as.data.frame(data.ht)
+data.ht$ER.Status = droplevels(data.ht$ER.Status)
+data.ht$PR.Status = droplevels(data.ht$PR.Status)
+data.ht$HER2.Final.Status = droplevels(data.ht$HER2.Final.Status)
+
+filter.pr = (cancer$PR.Status == "Positive" | cancer$PR.Status == "Negative")
+filter.er = (cancer$ER.Status == "Positive" | cancer$ER.Status == "Negative")
+filter.her = (cancer$HER2.Final.Status == "Positive" | cancer$HER2.Final.Status == "Negative")
+
+# test.lda = lda(data.ht[!(folds == 1),-(51:54)],data.ht$histological.type[!(folds == 1)])
+# 
+#  pred45 = predict(test.lda,newdata = as.data.frame(data.ht[(folds == 1),-(51:54)]))
+#  table(pred45$class,data.ht$histological.type[(folds == 1)])
+# 
+# pred46 = prediction(as.numeric(pred45$class),as.numeric(data.ht$histological.type[folds == 1]))
+# AUCtest = performance(pred46, measure = "auc")
+# 
+# AUCtest@y.values[[1]]
+
+auc.lit = c()
+for (i in 1:3) {
+  data.ht.test = data.ht[folds == i,]
+  data.ht.train = data.ht[!(folds == i),]
+  mod.ht = glm(histological.type~.,data = data.ht.train[,-(51:53)],family = "binomial")
+  pred = prediction(as.numeric(as.factor(ifelse(predict(mod.ht,newdata = data.ht.test[,-(51:53)])>0.7,"ILC","IDC"))),as.numeric(as.factor(data.ht.test$histological.type)))
+AUC = performance(pred, measure = "auc")
+
+mod.pr = glm(droplevels(PR.Status)~.,data = data.ht[(filter.pr & !(folds == i)),-(52:54)],family = "binomial")
+   pred2 = prediction(as.numeric(as.factor(ifelse(predict(mod.pr,newdata = data.ht[filter.pr & (folds == i),-(52:54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht$PR.Status[filter.pr & (folds == i)])))
+AUC2 = performance(pred2, measure = "auc")
+
+mod.er = glm(droplevels(ER.Status)~.,data = data.ht[(filter.er & !(folds == i)),-c(51,53,54)],family = "binomial")
+  pred3 = prediction(as.numeric(as.factor(ifelse(predict(mod.er,newdata = data.ht[filter.er & (folds == i),-c(51,53,54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht$ER.Status[filter.er & (folds == i)])))
+  #print(as.factor(ifelse(predict(mod.er,newdata = data.ht[filter.er & (folds == i),-c(51,53,54)])>0.7,"Positive","Negative")))
+  #print(as.factor(data.ht$ER.Status[filter.er & (folds == i)]))
+AUC3 = performance(pred3, measure = "auc")
+
+mod.her = glm(droplevels(HER2.Final.Status)~.,data = data.ht[(filter.her & !(folds == i)),-c(51,52,54)],family = "binomial")
+   pred4 = prediction(as.numeric(as.factor(ifelse(predict(mod.her,newdata = data.ht[filter.her & (folds == i),-c(51,52,54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht$HER2.Final.Status[filter.her & (folds == i)])))
+AUC4 = performance(pred4, measure = "auc")
+
+auc.lit[i] = (AUC@y.values[[1]] + AUC2@y.values[[1]] + AUC3@y.values[[1]] + AUC4@y.values[[1]])/4
+}
+mean(auc.lit)
+```
+
+This is not a very good AUC value unfortunately. We will now turn our attention to the data-driven approach.
+
+We will conduct the above enumerated procedure four times, where each set of $50$ predictors will be tailored to one of the four responses using lasso. The best of these four will be the representative model of the data-driven approach.
+
+For the lasso, $\lambda$ is chosen so as to result in 50 nonzero predictors. If we cannot get exactly $50$, any extra will be removed.
+
+Also, it should be noted that, as mentioned earlier, some of the responses have missing or incompatible values, so the corresponding observations will have to be removed for that portion of the model-fitting. 
+
+```{r,message = FALSE, warning = FALSE}
+
+filter.pr = (cancer$PR.Status == "Positive" | cancer$PR.Status == "Negative")
+filter.er = (cancer$ER.Status == "Positive" | cancer$ER.Status == "Negative")
+filter.her = (cancer$HER2.Final.Status == "Positive" | cancer$HER2.Final.Status == "Negative")
+
+#histological.type
+lasso = glmnet(cancer[,1:1936],cancer$histological.type,family = "binomial", alpha=1)
+del = sample(c(c(0,0,0),rep(1,50)))
+
+data.ht = cbind(cancer[,which(!(coef(lasso,s=0.0175) == 0))[del == 1]],cancer[1938:1941])
+
+auc.ht = c()
+for (i in 1:3) {
+  data.ht.test = data.ht[folds == i,]
+  data.ht.train = data.ht[!(folds == i),]
+  mod.ht = glm(histological.type~.,data = data.ht.train[,-(51:53)],family = "binomial")
+  pred = prediction(as.numeric(as.factor(ifelse(predict(mod.ht,newdata = data.ht.test[,-(51:53)])>0.7,"ILC","IDC"))),as.numeric(as.factor(data.ht.test$histological.type)))
+AUC = performance(pred, measure = "auc")
+
+mod.pr = glm(droplevels(PR.Status)~.,data = data.ht[(filter.pr & !(folds == i)),-(52:54)],family = "binomial")
+   pred2 = prediction(as.numeric(as.factor(ifelse(predict(mod.pr,newdata = data.ht[filter.pr & (folds == i),-(52:54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht[filter.pr & (folds == i),51])))
+AUC2 = performance(pred2, measure = "auc")
+
+mod.er = glm(droplevels(ER.Status)~.,data = data.ht[(filter.er & !(folds == i)),-c(51,53,54)],family = "binomial")
+   pred3 = prediction(as.numeric(as.factor(ifelse(predict(mod.er,newdata = data.ht[filter.er & (folds == i),-c(51,53,54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht[filter.er & (folds == i),52])))
+AUC3 = performance(pred3, measure = "auc")
+
+mod.her = glm(droplevels(HER2.Final.Status)~.,data = data.ht[(filter.her & !(folds == i)),-c(51,52,54)],family = "binomial")
+   pred4 = prediction(as.numeric(as.factor(ifelse(predict(mod.her,newdata = data.ht[filter.her & (folds == i),-c(51,52,54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht[filter.her & (folds == i),53])))
+AUC4 = performance(pred4, measure = "auc")
+
+auc.ht[i] = (AUC@y.values[[1]] + AUC2@y.values[[1]] + AUC3@y.values[[1]] + AUC4@y.values[[1]])/4
+}
+#mean(auc.ht)
+```
+
+```{r,message = FALSE, warning = FALSE}
+#PR.Status
+lasso = glmnet(cancer[filter.pr,1:1936],droplevels(cancer$PR.Status[filter.pr]),family = "binomial", alpha=1)
+del = sample(c(c(0,0,0,0,0),rep(1,50)))
+
+data.ht = cbind(cancer[,which(!(coef(lasso,s=0.02463) == 0))[del == 1]],cancer[1938:1941])
+```
+
+```{r,warning = FALSE,message = FALSE}
+auc.pr = c()
+for (i in 1:3) {
+  data.ht.test = data.ht[folds == i,]
+  data.ht.train = data.ht[!(folds == i),]
+  mod.ht = glm(histological.type~.,data = data.ht.train[,-(51:53)],family = "binomial")
+  pred = prediction(as.numeric(as.factor(ifelse(predict(mod.ht,newdata = data.ht.test[,-(51:53)])>0.7,"ILC","IDC"))),as.numeric(as.factor(data.ht.test$histological.type)))
+AUC = performance(pred, measure = "auc")
+
+mod.pr = glm(droplevels(PR.Status)~.,data = data.ht[(filter.pr & !(folds == i)),-(52:54)],family = "binomial")
+   pred2 = prediction(as.numeric(as.factor(ifelse(predict(mod.pr,newdata = data.ht[filter.pr & (folds == i),-(52:54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht[filter.pr & (folds == i),51])))
+AUC2 = performance(pred2, measure = "auc")
+
+mod.er = glm(droplevels(ER.Status)~.,data = data.ht[(filter.er & !(folds == i)),-c(51,53,54)],family = "binomial")
+   pred3 = prediction(as.numeric(as.factor(ifelse(predict(mod.er,newdata = data.ht[filter.er & (folds == i),-c(51,53,54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht[filter.er & (folds == i),52])))
+AUC3 = performance(pred3, measure = "auc")
+
+mod.her = glm(droplevels(HER2.Final.Status)~.,data = data.ht[(filter.her & !(folds == i)),-c(51,52,54)],family = "binomial")
+   pred4 = prediction(as.numeric(as.factor(ifelse(predict(mod.her,newdata = data.ht[filter.her & (folds == i),-c(51,52,54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht[filter.her & (folds == i),53])))
+AUC4 = performance(pred4, measure = "auc")
+
+auc.pr[i] = (AUC@y.values[[1]] + AUC2@y.values[[1]] + AUC3@y.values[[1]] + AUC4@y.values[[1]])/4
+}
+#mean(auc.pr)
+```
+
+```{r,message = FALSE, warning = FALSE}
+#ER.Status
+lasso = glmnet(cancer[filter.er,1:1936],droplevels(cancer$ER.Status[filter.er]),family = "binomial", alpha=1)
+#del = sample(c(c(0,0,0,0,0),rep(1,50)))
+
+data.ht = cbind(cancer[,which(!(coef(lasso,s=0.022) == 0))],cancer[1938:1941])
+```
+
+```{r,warning = FALSE,message = FALSE}
+auc.er = c()
+for (i in 1:3) {
+  data.ht.test = data.ht[folds == i,]
+  data.ht.train = data.ht[!(folds == i),]
+  mod.ht = glm(histological.type~.,data = data.ht.train[,-(51:53)],family = "binomial")
+  pred = prediction(as.numeric(as.factor(ifelse(predict(mod.ht,newdata = data.ht.test[,-(51:53)])>0.7,"ILC","IDC"))),as.numeric(as.factor(data.ht.test$histological.type)))
+AUC = performance(pred, measure = "auc")
+
+mod.pr = glm(droplevels(PR.Status)~.,data = data.ht[(filter.pr & !(folds == i)),-(52:54)],family = "binomial")
+   pred2 = prediction(as.numeric(as.factor(ifelse(predict(mod.pr,newdata = data.ht[filter.pr & (folds == i),-(52:54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht[filter.pr & (folds == i),51])))
+AUC2 = performance(pred2, measure = "auc")
+
+mod.er = glm(droplevels(ER.Status)~.,data = data.ht[(filter.er & !(folds == i)),-c(51,53,54)],family = "binomial")
+   pred3 = prediction(as.numeric(as.factor(ifelse(predict(mod.er,newdata = data.ht[filter.er & (folds == i),-c(51,53,54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht[filter.er & (folds == i),52])))
+AUC3 = performance(pred3, measure = "auc")
+
+mod.her = glm(droplevels(HER2.Final.Status)~.,data = data.ht[(filter.her & !(folds == i)),-c(51,52,54)],family = "binomial")
+   pred4 = prediction(as.numeric(as.factor(ifelse(predict(mod.her,newdata = data.ht[filter.her & (folds == i),-c(51,52,54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht[filter.her & (folds == i),53])))
+AUC4 = performance(pred4, measure = "auc")
+
+auc.er[i] = (AUC@y.values[[1]] + AUC2@y.values[[1]] + AUC3@y.values[[1]] + AUC4@y.values[[1]])/4
+}
+#mean(auc.er)
+```
+
+```{r,message = FALSE, warning = FALSE}
+#HER.Status
+lasso = glmnet(cancer[filter.her,1:1936],droplevels(cancer$HER2.Final.Status[filter.her]),family = "binomial", alpha=1)
+del = sample(c(c(0,0),rep(1,50)))
+
+data.ht = cbind(cancer[,which(!(coef(lasso,s=0.02) == 0))[del == 1]],cancer[1938:1941])
+```
+
+```{r,warning = FALSE,message = FALSE}
+auc.her = c()
+for (i in 1:3) {
+  data.ht.test = data.ht[folds == i,]
+  data.ht.train = data.ht[!(folds == i),]
+  mod.ht = glm(histological.type~.,data = data.ht.train[,-(51:53)],family = "binomial")
+  pred = prediction(as.numeric(as.factor(ifelse(predict(mod.ht,newdata = data.ht.test[,-(51:53)])>0.7,"ILC","IDC"))),as.numeric(as.factor(data.ht.test$histological.type)))
+AUC = performance(pred, measure = "auc")
+
+mod.pr = glm(droplevels(PR.Status)~.,data = data.ht[(filter.pr & !(folds == i)),-(52:54)],family = "binomial")
+   pred2 = prediction(as.numeric(as.factor(ifelse(predict(mod.pr,newdata = data.ht[filter.pr & (folds == i),-(52:54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht[filter.pr & (folds == i),51])))
+AUC2 = performance(pred2, measure = "auc")
+
+mod.er = glm(droplevels(ER.Status)~.,data = data.ht[(filter.er & !(folds == i)),-c(51,53,54)],family = "binomial")
+   pred3 = prediction(as.numeric(as.factor(ifelse(predict(mod.er,newdata = data.ht[filter.er & (folds == i),-c(51,53,54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht[filter.er & (folds == i),52])))
+AUC3 = performance(pred3, measure = "auc")
+
+mod.her = glm(droplevels(HER2.Final.Status)~.,data = data.ht[(filter.her & !(folds == i)),-c(51,52,54)],family = "binomial")
+   pred4 = prediction(as.numeric(as.factor(ifelse(predict(mod.her,newdata = data.ht[filter.her & (folds == i),-c(51,52,54)])>0.7,"Positive","Negative"))),as.numeric(as.factor(data.ht[filter.her & (folds == i),53])))
+AUC4 = performance(pred4, measure = "auc")
+
+auc.her[i] = (AUC@y.values[[1]] + AUC2@y.values[[1]] + AUC3@y.values[[1]] + AUC4@y.values[[1]])/4
+}
+#mean(auc.her)
+```
+
+After executing the above outlined procedure, we obtain the following results:
+
+```{r,mesage = FALSE, warning = FALSE}
+library(knitr)
+
+aucmat = matrix(c(mean(auc.ht),mean(auc.pr),mean(auc.er),mean(auc.her)),4,1)
+
+rownames(aucmat) = c("histological.type","PR.Status","ER.Status","HER2.Final.Status")
+colnames(aucmat) = c("AUC")
+
+kable(aucmat,caption = "Mean 3-CV AUC Across All Classes")
+```
+
+The $50$ predictor set chosen using `histological.type` as the base response had the best performance. However, these models are, frankly speaking, not very good. AUC values in this range are typically undesirable.
+
+Therefore, we conclude that the literature-driven model, though not very good in and of itself, proves to be slightly preferable to the purely data-driven model, with an AUC of $`r mean(auc.lit)`$.
+  
+### References
+
+1. Ciriello, Giovanni et al. "Comprehensive Molecular Portraits of Invasive Lobular Breast Cancer." _Cell Press_ vol. 163,2 (2015): 506-519. doi:10.1016/j.cell.2015.09.033
+
+2. Parker, Joel S et al. “Supervised risk predictor of breast cancer based on intrinsic subtypes.” _Journal of clinical oncology : official journal of the American Society of Clinical Oncology_ vol. 27,8 (2009): 1160-7. doi:10.1200/JCO.2008.18.1370
+
+3. Hammond, M Elizabeth H et al. “American Society of Clinical Oncology/College Of American Pathologists guideline recommendations for immunohistochemical testing of estrogen and progesterone receptors in breast cancer.” _Journal of clinical oncology : official journal of the American Society of Clinical Oncology_ vol. 28,16 (2010): 2784-95. doi:10.1200/JCO.2009.25.6529
+
+4. Paik, Soonmyung et al. “A multigene assay to predict recurrence of tamoxifen-treated, node-negative breast cancer.” _The New England journal of medicine_ vol. 351,27 (2004): 2817-26. doi:10.1056/NEJMoa041588
+
+5. van 't Veer, L., Dai, H., van de Vijver, M. et al. "Gene expression profiling predicts clinical outcome of breast cancer." _Nature_ vol. 415, (2002): 530–536. doi: https://doi.org/10.1038/415530a
